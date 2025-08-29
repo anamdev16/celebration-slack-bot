@@ -1,0 +1,29 @@
+{
+  "name": "celebrations-bot",
+  "version": "1.0.0",
+  "description": "Automated birthday and anniversary celebrations bot for Slack integration with Gusto calendars",
+  "main": "celebrations-check.js",
+  "scripts": {
+    "start": "node celebrations-check.js",
+    "test": "node celebrations-check.js"
+  },
+  "dependencies": {
+    "googleapis": "^134.0.0",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "slack",
+    "bot",
+    "celebrations",
+    "birthday",
+    "anniversary",
+    "gusto",
+    "calendar",
+    "automation"
+  ],
+  "author": "Ana May",
+  "license": "MIT"
+}

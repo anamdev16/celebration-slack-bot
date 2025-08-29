@@ -1,0 +1,44 @@
+name: Daily Celebrations Check
+
+on:
+  schedule:
+    # Run daily at 7 AM EST (12:00 UTC, accounting for EST = UTC-5)
+    - cron: '0 12 * * *'
+  
+  # Allow manual triggering for testing
+  workflow_dispatch:
+
+jobs:
+  check-celebrations:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        npm install googleapis axios
+        
+    - name: Run celebrations check
+      env:
+        SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+        GOOGLE_CALENDAR_API_KEY: ${{ secrets.GOOGLE_CALENDAR_API_KEY }}
+        CALENDAR_IDS: ${{ secrets.CALENDAR_IDS }}
+        CALENDAR_NAME_MAP: ${{ secrets.CALENDAR_NAME_MAP }}
+        SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      run: |
+        echo "🚀 Running daily celebrations check..."
+        node celebrations-check.js
+        
+    - name: Log completion
+      if: always()
+      run: |
+        echo "✅ Celebrations check workflow completed"
+        echo "📅 Run date: $(date)"

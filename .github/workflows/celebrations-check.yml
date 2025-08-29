@@ -31,9 +31,12 @@ jobs:
         GOOGLE_CALENDAR_API_KEY: ${{ secrets.GOOGLE_CALENDAR_API_KEY }}
         CALENDAR_IDS: ${{ secrets.CALENDAR_IDS }}
         CALENDAR_NAME_MAP: ${{ secrets.CALENDAR_NAME_MAP }}
-        SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+        # Use testing channel for manual runs, production channel for scheduled runs
+        SLACK_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && '#celebrations-bot-test' || secrets.SLACK_CHANNEL }}
       run: |
         echo "🚀 Running daily celebrations check..."
+        echo "📋 Trigger: ${{ github.event_name }}"
+        echo "📺 Channel: ${{ github.event_name == 'workflow_dispatch' && '#celebrations-bot-test' || secrets.SLACK_CHANNEL || '#celebrations-bot-test' }}"
         node celebrations-check.js
         
     - name: Log completion

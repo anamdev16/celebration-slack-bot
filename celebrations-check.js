@@ -1,7 +1,7 @@
 const { google } = require('googleapis');
 const axios = require('axios');
 
-// Birthday message pool (24 messages as requested)
+// Birthday message pool
 const BIRTHDAY_MESSAGES = [
     "Hope your special day brings you all the happiness your heart can hold! 🌟",
     "Wishing you a year filled with happiness, success, and all your favorite things! ✨",
@@ -78,8 +78,12 @@ class CelebrationsBot {
 
     getTodayInEST() {
         const now = new Date();
+        // Get today's date in Eastern Time
         const estDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
-        return estDate.toISOString().split('T')[0]; // YYYY-MM-DD format
+        const year = estDate.getFullYear();
+        const month = String(estDate.getMonth() + 1).padStart(2, '0');
+        const day = String(estDate.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
     }
 
     getRandomMessage(messagePool) {
@@ -89,15 +93,17 @@ class CelebrationsBot {
     async getCalendarEvents(calendarId) {
         try {
             const today = this.getTodayInEST();
+            // Use the actual Eastern timezone for the API call
             const timeMin = `${today}T00:00:00-05:00`;
             const timeMax = `${today}T23:59:59-05:00`;
 
-            console.log(`Fetching events for calendar ${calendarId} on ${today}`);
+            console.log(`Fetching events for calendar ${calendarId} on ${today} (EST)`);
 
             const response = await this.calendar.events.list({
                 calendarId: calendarId,
                 timeMin: timeMin,
                 timeMax: timeMax,
+                timeZone: 'America/New_York',
                 singleEvents: true,
                 orderBy: 'startTime',
             });
@@ -145,7 +151,7 @@ class CelebrationsBot {
             return {
                 type: 'birthday',
                 name: name,
-                message: `🎉 Happy Birthday ${name}! 🎂\n${this.getRandomMessage(BIRTHDAY_MESSAGES)}`
+                message: `🎉 Happy Birthday, ${name}! 🎂\n${this.getRandomMessage(BIRTHDAY_MESSAGES)}`
             };
         }
         
@@ -156,7 +162,7 @@ class CelebrationsBot {
             return {
                 type: 'birthday',
                 name: name,
-                message: `🎉 Happy Birthday ${name}! 🎂\n${this.getRandomMessage(BIRTHDAY_MESSAGES)}`
+                message: `🎉 Happy Birthday, ${name}! 🎂\n${this.getRandomMessage(BIRTHDAY_MESSAGES)}`
             };
         }
         
@@ -178,7 +184,7 @@ class CelebrationsBot {
                 type: 'anniversary',
                 name: name,
                 years: years,
-                message: `🎊 Congratulations ${name} on your ${years}-year anniversary! 🎊\n${this.getRandomMessage(ANNIVERSARY_MESSAGES)}`
+                message: `🎊 Congratulations, ${name}, on your ${years}-year anniversary! 🎊\n${this.getRandomMessage(ANNIVERSARY_MESSAGES)}`
             };
         }
         
@@ -191,7 +197,7 @@ class CelebrationsBot {
                 type: 'anniversary',
                 name: name,
                 years: years,
-                message: `🎊 Congratulations ${name} on your ${years}-year anniversary! 🎊\n${this.getRandomMessage(ANNIVERSARY_MESSAGES)}`
+                message: `🎊 Congratulations, ${name}, on your ${years}-year anniversary! 🎊\n${this.getRandomMessage(ANNIVERSARY_MESSAGES)}`
             };
         }
         

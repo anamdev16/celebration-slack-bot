@@ -2,8 +2,9 @@ name: Daily Celebrations Check
 
 on:
   schedule:
-    # Run daily at 7 AM EST (12:00 UTC, accounting for EST = UTC-5)
-    - cron: '0 12 * * *'
+    # Run daily at 11:30 UTC - this hits 7:30 AM EST and 6:30 AM EDT
+    # Consistent time that works year-round without double runs
+    - cron: '30 11 * * *'
   
   # Allow manual triggering for testing
   workflow_dispatch:

@@ -1,7 +1,7 @@
 const { google } = require('googleapis');
 const axios = require('axios');
 
-// Birthday message pool
+// Birthday message pool (24 messages as requested)
 const BIRTHDAY_MESSAGES = [
     "Hope your special day brings you all the happiness your heart can hold! 🌟",
     "Wishing you a year filled with happiness, success, and all your favorite things! ✨",
@@ -78,12 +78,35 @@ class CelebrationsBot {
 
     getTodayInEST() {
         const now = new Date();
-        // Get today's date in Eastern Time
+        // Get today's date in Eastern Time (automatically handles EST/EDT)
         const estDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
         const year = estDate.getFullYear();
         const month = String(estDate.getMonth() + 1).padStart(2, '0');
         const day = String(estDate.getDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
+    }
+
+    getDateOffset(days) {
+        const now = new Date();
+        const estDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
+        estDate.setDate(estDate.getDate() + days);
+        const year = estDate.getFullYear();
+        const month = String(estDate.getMonth() + 1).padStart(2, '0');
+        const day = String(estDate.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    getEasternTimezoneOffset() {
+        // Get current timezone offset for Eastern Time
+        const now = new Date();
+        const utc = new Date(now.getTime() + (now.getTimezoneOffset() * 60000));
+        const eastern = new Date(utc.toLocaleString("en-US", {timeZone: "America/New_York"}));
+        const offset = (utc.getTime() - eastern.getTime()) / (1000 * 60 * 60);
+        
+        // Return as string (e.g., "-05:00" or "-04:00")
+        const hours = Math.floor(Math.abs(offset));
+        const sign = offset <= 0 ? '+' : '-';
+        return `${sign}${String(hours).padStart(2, '0')}:00`;
     }
 
     getRandomMessage(messagePool) {
@@ -92,30 +115,65 @@ class CelebrationsBot {
 
     async getCalendarEvents(calendarId) {
         try {
+            // Get a wider date range to catch events across timezones
             const today = this.getTodayInEST();
-            // Use the actual Eastern timezone for the API call
-            const timeMin = `${today}T00:00:00-05:00`;
-            const timeMax = `${today}T23:59:59-05:00`;
-
-            console.log(`Fetching events for calendar ${calendarId} on ${today} (EST)`);
+            const yesterday = this.getDateOffset(-1);
+            const tomorrow = this.getDateOffset(1);
+            
+            console.log(`Fetching events for calendar ${calendarId} from ${yesterday} to ${tomorrow}`);
 
             const response = await this.calendar.events.list({
                 calendarId: calendarId,
-                timeMin: timeMin,
-                timeMax: timeMax,
-                timeZone: 'America/New_York',
+                timeMin: `${yesterday}T00:00:00Z`,
+                timeMax: `${tomorrow}T23:59:59Z`,
                 singleEvents: true,
                 orderBy: 'startTime',
             });
 
             const events = response.data.items || [];
-            console.log(`Found ${events.length} events for calendar ${calendarId}`);
+            console.log(`Found ${events.length} total events for calendar ${calendarId}`);
             
-            return events.filter(event => this.isCelebrationEvent(event));
+            // Filter for celebration events that are today in any reasonable timezone
+            const celebrationEvents = events.filter(event => {
+                if (!this.isCelebrationEvent(event)) return false;
+                return this.isEventToday(event, today);
+            });
+            
+            console.log(`Found ${celebrationEvents.length} celebration events for today`);
+            return celebrationEvents;
         } catch (error) {
             console.error(`Error fetching events for calendar ${calendarId}:`, error.message);
             return [];
         }
+    }
+
+    getDateOffset(days) {
+        const now = new Date();
+        const estDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
+        estDate.setDate(estDate.getDate() + days);
+        const year = estDate.getFullYear();
+        const month = String(estDate.getMonth() + 1).padStart(2, '0');
+        const day = String(estDate.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    isEventToday(event, todayEST) {
+        // For all-day events, check if the event date matches today in EST
+        if (event.start?.date) {
+            const eventDate = event.start.date; // YYYY-MM-DD format
+            console.log(`Checking event "${event.summary}" - Event date: ${eventDate}, Today EST: ${todayEST}`);
+            return eventDate === todayEST;
+        }
+        
+        // For timed events (shouldn't happen for birthdays/anniversaries, but just in case)
+        if (event.start?.dateTime) {
+            const eventDateTime = new Date(event.start.dateTime);
+            const eventDateEST = eventDateTime.toLocaleDateString("en-CA", {timeZone: "America/New_York"}); // YYYY-MM-DD
+            console.log(`Checking timed event "${event.summary}" - Event date EST: ${eventDateEST}, Today EST: ${todayEST}`);
+            return eventDateEST === todayEST;
+        }
+        
+        return false;
     }
 
     isCelebrationEvent(event) {

@@ -1,0 +1,19 @@
+{
+  "name": "celebration-slack-bot-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker that answers @mentions asking whether it is Friday",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Ana May",
+  "license": "MIT"
+}

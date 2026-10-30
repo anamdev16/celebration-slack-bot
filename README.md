@@ -2,7 +2,7 @@
 
 An automated Slack bot that watches multiple Gusto company calendars for birthdays and work anniversaries, then posts personalized celebration messages to a team Slack channel. Built for Seedtrust, Orchid, and Gather.
 
-The whole thing is one Node.js script running on a daily GitHub Actions cron. No server, no database, no maintenance.
+The celebrations half is one Node.js script running on a daily GitHub Actions cron — no server, no database, no maintenance. Alongside it lives [the Friday bot](#the-friday-bot), a small Cloudflare Worker that answers when someone asks it what day it is. The two are independent; neither can take the other down.
 
 ---
 
@@ -29,6 +29,7 @@ If anything failed along the way — a calendar that wouldn't load, a Slack post
 - **Resilient**: Errors fetching one calendar don't stop the others. Errors posting one message don't stop the rest.
 - **Fails loudly**: A partial failure still finishes the run, then exits non-zero so a broken token shows up as a red X instead of a silent green check.
 - **Stays alive**: A companion `keepalive` workflow stops GitHub from auto-disabling the schedule after 60 quiet days.
+- **Answers back**: A separate Cloudflare Worker replies when anyone asks `@bot is today Friday?` — see [The Friday bot](#the-friday-bot).
 - **Bot identity**: Posts as `Celebrations Bot` with a 🎉 avatar so it's instantly recognizable in Slack.
 
 ---
@@ -136,6 +137,86 @@ A scheduled workflow can't rescue itself from this, because it gets disabled too
 
 ---
 
+## The Friday bot
+
+Mention the bot and ask what day it is. On a Friday it says so and posts the video; any other day it tells you how far away Friday is.
+
+```
+Ana    @SEEDlebration is today Friday?
+bot    IT IS FRIDAY. 🎉
+       https://youtu.be/U6n2NcJ7rLc
+
+                              ── on a Tuesday ──
+
+Ana    @SEEDlebration is today Friday?
+bot    Tuesday — the Monday that learned nothing.
+```
+
+It replies to *any* mention, not just ones phrased as a question — it's a one-trick bot and parsing the sentence would only add ways to fail. If it's mentioned inside a thread it replies in that thread; mentioned in the channel, it replies in the channel so the video unfurls.
+
+### Why this can't live in the cron job
+
+The celebrations bot is a script that wakes up, runs for twenty seconds and exits. Nothing is listening the rest of the day. Slack's Events API needs an endpoint that answers within 3 seconds, and a GitHub Actions runner takes 30 seconds to two minutes just to boot — so this is a genuinely separate piece of infrastructure, living in `worker/`.
+
+Cloudflare Workers suit it well: the free tier covers this comfortably, and there are no cold starts, so the 3-second budget is never in danger.
+
+### Setup
+
+**1. Slack app** — in the same app you already use, under **Event Subscriptions**:
+
+- Add the bot token scope `app_mentions:read` (under **OAuth & Permissions**, alongside the `chat:write` you already have), then reinstall the app.
+- Copy the **Signing Secret** from **Basic Information → App Credentials**. This is *not* the bot token; you need both.
+
+**2. Deploy the Worker**
+
+```bash
+cd worker
+npx wrangler login
+npx wrangler secret put SLACK_BOT_TOKEN       # the same xoxb-... token
+npx wrangler secret put SLACK_SIGNING_SECRET  # from Basic Information
+npx wrangler deploy
+```
+
+Deploy prints a URL like `https://celebration-slack-bot.<subdomain>.workers.dev`.
+
+**3. Point Slack at it** — back under **Event Subscriptions**, enable events and paste that URL as the Request URL. Slack immediately sends a one-time `url_verification` challenge; the Worker answers it, and you should see a green **Verified**. Then under **Subscribe to bot events** add `app_mention` and save.
+
+**4. Invite the bot** to any channel you want it to answer in (`/invite @SEEDlebration`). Unlike the celebrations post, `chat:write.public` is not enough here — it has to be in the channel to receive the mention.
+
+### Secrets
+
+Set with `npx wrangler secret put NAME`, never in `wrangler.toml` — that file is committed.
+
+| Secret | Description |
+|---|---|
+| `SLACK_BOT_TOKEN` | Bot User OAuth Token, `xoxb-...`. Same one the cron job uses. |
+| `SLACK_SIGNING_SECRET` | From **Basic Information → App Credentials**. Used to prove requests really came from Slack. |
+
+### Tests
+
+```bash
+cd worker
+npm test
+```
+
+28 tests, no network and no deploy needed. They cover the reply logic across all seven weekdays — including two cases where the Eastern weekday and the UTC weekday disagree — and drive the Worker's `fetch` handler directly with genuinely HMAC-signed requests, checking that tampered bodies, wrong secrets, stale timestamps and missing headers are all rejected.
+
+### Troubleshooting
+
+**Slack won't verify the Request URL** → the Worker returns 401 if the signature doesn't check out, and a wrong `SLACK_SIGNING_SECRET` is the usual cause. Watch it live with `npx wrangler tail` while you hit **Retry** in Slack.
+
+**Verified, but it ignores mentions** → either `app_mention` wasn't added under **Subscribe to bot events**, or the app wasn't reinstalled after adding the scope, or the bot isn't in the channel.
+
+**It replies but the video doesn't embed** → Slack only unfurls a bare URL on its own line. Keep `FRIDAY_VIDEO` unwrapped.
+
+**Nothing in the logs at all** → Slack is not reaching the Worker. Check the Request URL in the dashboard still matches the deployed URL.
+
+### Changing what it says
+
+Everything is in `worker/src/friday.js`: `FRIDAY_REPLIES` for Fridays, `NOT_FRIDAY_REPLIES` keyed by weekday for the rest, and `FRIDAY_VIDEO` for the link. The day-specific pools reference how many days remain, so if you move messages between days, update the counts. Run `npm test` after editing — the tests assert each day draws from its own pool.
+
+---
+
 ## Testing
 
 ### Manual run
@@ -213,6 +294,10 @@ gh workflow run "Keepalive"    # resets the clock so it doesn't recur
 
 **Runs are present and green but Slack is quiet** → that should no longer be possible; a green run means every message was accepted by Slack. If it happens anyway, the bot is posting to the wrong place: check `SLACK_CHANNEL`, and remember that manual runs deliberately redirect to `#celebrations-bot-test`.
 
+### The bot doesn't answer @mentions
+
+That's the Worker, not the cron job — they're completely separate and share no infrastructure. See [The Friday bot](#the-friday-bot).
+
 ---
 
 ## Customization
@@ -232,6 +317,8 @@ const ANNIVERSARY_MESSAGES = [
     // ... add your own
 ];
 ```
+
+The Friday bot's replies live separately, in `worker/src/friday.js`.
 
 ### Change message format
 
@@ -279,11 +366,12 @@ A weekday-only schedule (`1-5`) means any birthday falling on a weekend is misse
 
 ## Security
 
-- Nothing sensitive lives in the repo — all credentials are GitHub Secrets, injected at runtime.
+- Nothing sensitive lives in the repo — GitHub Secrets for the cron job, Wrangler secrets for the Worker, both injected at runtime. `wrangler.toml` is committed and deliberately holds no values.
 - The Google API key is restricted to the Calendar API and only ever reads. If it leaks, the blast radius is bounded to reading already-shared calendar events.
-- The Slack bot token can be revoked from the Slack admin panel and re-pasted into GitHub Secrets without any code change.
+- The Slack bot token can be revoked from the Slack admin panel and re-pasted without any code change. Rotating it now means updating it in **both** places — GitHub Secrets and Wrangler.
 - The keepalive workflow pushes with the built-in `GITHUB_TOKEN`, scoped to `contents: write` on this repo only. No extra credential is involved.
-- Rotate both tokens annually as a baseline, and immediately if either is suspected compromised.
+- **The Worker's URL is public**, so every request is verified against `SLACK_SIGNING_SECRET` before it is parsed, and anything signed more than five minutes ago is rejected to block replays. Without that check, anyone who found the URL could make the bot post as itself. Treat the signing secret as being as sensitive as the bot token.
+- Rotate all three credentials annually as a baseline, and immediately if any is suspected compromised.
 
 ---
 
@@ -322,6 +410,36 @@ A weekday-only schedule (`1-5`) means any birthday falling on a weekend is misse
                              │ any failures?       │
                              │  yes → exit 1 (red) │
                              └─────────────────────┘
+```
+
+The Friday bot is a second, entirely separate system. It shares no code, no credentials and no runtime with the cron job above — if one breaks, the other carries on.
+
+```
+  someone types "@bot is today Friday?"
+                │
+                ▼
+     ┌─────────────────────┐   POST, signed with
+     │ Slack Events API    │ ─ the signing secret ─┐
+     └─────────────────────┘                      │
+                                                  ▼
+                                   ┌──────────────────────────┐
+                                   │ Cloudflare Worker        │
+                                   │  1. verify signature     │
+                                   │  2. ack 200 immediately  │
+                                   │  3. waitUntil(reply)     │
+                                   └────────────┬─────────────┘
+                                                ▼
+                                   ┌──────────────────────────┐
+                                   │ weekday in America/      │
+                                   │ New_York == 'Friday'?    │
+                                   └────────────┬─────────────┘
+                                   yes ─────────┴───────── no
+                                    │                       │
+                                    ▼                       ▼
+                          one-liner + video        day-specific excuse
+                                    └───────────┬───────────┘
+                                                ▼
+                                      Slack chat.postMessage
 ```
 
 ---

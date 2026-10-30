@@ -1,0 +1,14 @@
+name = "celebration-slack-bot"
+main = "src/index.js"
+compatibility_date = "2025-11-01"
+
+# Surfaces console.log / console.error from the Worker in the Cloudflare
+# dashboard, which is the only way to see why a reply didn't go out.
+[observability]
+enabled = true
+
+# SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET are deliberately NOT set here --
+# this file is committed. Set them as encrypted secrets instead:
+#
+#   npx wrangler secret put SLACK_BOT_TOKEN
+#   npx wrangler secret put SLACK_SIGNING_SECRET

@@ -1,0 +1,54 @@
+name: Keepalive
+
+# GitHub automatically disables scheduled workflows after 60 days without
+# repository activity, which is what silently killed the celebrations bot from
+# Jul 6-23 and again from Sep 22 to Oct 27 2026. Both outages ended only because
+# someone noticed and manually re-ran the workflow.
+#
+# A push is the activity that resets that clock, so this job makes one. It runs
+# on the 1st and 15th so it can never go stale itself, but it only actually
+# commits once the repo has been quiet for a while -- an active repo needs no
+# help and gets no extra commits.
+
+on:
+  schedule:
+    - cron: '17 4 1,15 * *'
+
+  # Also useful as the manual "wake the bot up" button
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Push an empty commit if the repo has gone quiet
+        run: |
+          LAST_COMMIT=$(git log -1 --format=%ct)
+          NOW=$(date +%s)
+          DAYS_QUIET=$(( (NOW - LAST_COMMIT) / 86400 ))
+
+          echo "📅 Days since last commit: $DAYS_QUIET"
+
+          # 35 days, not 60. This job runs at most 17 days apart, so checking
+          # against 35 guarantees a commit lands by roughly day 52 at the latest
+          # -- comfortably inside the window, with room for a skipped run.
+          if [ "$DAYS_QUIET" -lt 35 ]; then
+            echo "✅ Recent activity, scheduled workflows are in no danger. Nothing to do."
+            exit 0
+          fi
+
+          echo "⚠️  Quiet long enough to risk auto-disable. Pushing a keepalive commit."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive to prevent scheduled workflow auto-disable"
+          git push
+
+          echo "✅ Keepalive pushed. The 60-day clock is reset."

@@ -2,18 +2,20 @@
 
 An automated Slack bot that watches multiple Gusto company calendars for birthdays and work anniversaries, then posts personalized celebration messages to a team Slack channel. Built for Seedtrust, Orchid, and Gather.
 
-The whole thing is one Node.js script (~370 lines) running on a daily GitHub Actions cron. No server, no database, no maintenance.
+The whole thing is one Node.js script running on a daily GitHub Actions cron. No server, no database, no maintenance.
 
 ---
 
 ## How it works
 
-1. GitHub Actions runs `celebrations-check.js` on a daily cron at 12:00 UTC (7 AM EST / 8 AM EDT).
+1. GitHub Actions runs `celebrations-check.js` on a daily cron at 09:30 UTC.
 2. The script loops through each calendar ID in `CALENDAR_IDS` and queries the Google Calendar API for events from yesterday through tomorrow (a buffered window to handle timezone edge cases).
 3. Each event is filtered: must be all-day, and must contain "birthday" or "anniversary" in the summary.
 4. Surviving events are matched against today's date in `America/New_York` (which handles EST↔EDT automatically).
 5. Each match is parsed into a celebration object (name, type, optional year count) and a random message is selected from the appropriate pool.
 6. Messages are posted to Slack via `chat.postMessage`, one per second to avoid rate limits.
+
+If anything failed along the way — a calendar that wouldn't load, a Slack post that was rejected — the run exits non-zero so GitHub marks it red and emails you. A green check means every message that should have gone out, went out.
 
 ---
 
@@ -25,6 +27,8 @@ The whole thing is one Node.js script (~370 lines) running on a daily GitHub Act
 - **Random message rotation**: 24 birthday messages and 20 anniversary messages, randomly selected per event.
 - **Timezone-aware**: All "today" comparisons normalized to `America/New_York`.
 - **Resilient**: Errors fetching one calendar don't stop the others. Errors posting one message don't stop the rest.
+- **Fails loudly**: A partial failure still finishes the run, then exits non-zero so a broken token shows up as a red X instead of a silent green check.
+- **Stays alive**: A companion `keepalive` workflow stops GitHub from auto-disabling the schedule after 60 quiet days.
 - **Bot identity**: Posts as `Celebrations Bot` with a 🎉 avatar so it's instantly recognizable in Slack.
 
 ---
@@ -78,7 +82,7 @@ Go to **Settings → Secrets and variables → Actions** in your repo and add:
 | `GOOGLE_CALENDAR_API_KEY` | yes | API key for Google Calendar | `AIzaSy...` |
 | `CALENDAR_IDS` | yes | Comma-separated calendar IDs | `cal1@group.calendar.google.com,cal2@group.calendar.google.com` |
 | `CALENDAR_NAME_MAP` | yes* | JSON mapping calendar ID → person name | `{"cal1@group.calendar.google.com":"Ana May"}` |
-| `SLACK_CHANNEL` | no | Target channel | defaults to `#celebrations-bot-test` |
+| `SLACK_CHANNEL` | no | Target channel for celebrations | defaults to `#celebrations-bot-test` |
 
 \* Required only if any of your calendars use the first-person format (`Happy birthday to you!` / `Your N-year anniversary`). If all titles are third-person, the map can be empty.
 
@@ -107,38 +111,28 @@ All matched events must be all-day. Timed events are ignored.
 
 ---
 
-## Workflow file
+## Workflows
 
-`.github/workflows/celebrations-check.yml`:
+There are two, both in `.github/workflows/`. Read them there rather than trusting a copy pasted here — an earlier version of this README drifted out of sync with the real cron and went unnoticed for months.
 
-```yaml
-name: Daily Celebrations Check
+| File | Schedule | Purpose |
+|---|---|---|
+| `celebrations-check.yml` | daily, 09:30 UTC | The bot itself |
+| `keepalive.yml` | 1st and 15th, 04:17 UTC | Keeps the schedule above from being auto-disabled |
 
-on:
-  schedule:
-    - cron: '0 12 * * *'   # 12:00 UTC = 7 AM EST / 8 AM EDT
-  workflow_dispatch:        # allow manual trigger from the Actions tab
+Manual runs (`workflow_dispatch`) of the celebrations check send everything to `#celebrations-bot-test` instead of the real channels, so you can test freely without posting to `#general`.
 
-jobs:
-  celebrate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-      - run: npm install
-      - name: Run celebrations check
-        run: node celebrations-check.js
-        env:
-          SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
-          GOOGLE_CALENDAR_API_KEY: ${{ secrets.GOOGLE_CALENDAR_API_KEY }}
-          CALENDAR_IDS: ${{ secrets.CALENDAR_IDS }}
-          CALENDAR_NAME_MAP: ${{ secrets.CALENDAR_NAME_MAP }}
-          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
-```
+### Why 09:30 UTC
 
-> **DST note**: The cron is fixed at 12:00 UTC, so during EDT the post time shifts to 8 AM Eastern instead of 7 AM. The bot's date math is timezone-aware regardless — only the post time drifts.
+GitHub queues scheduled jobs on shared runners and delivers them late under load — this workflow's own history shows it landing anywhere from 17 minutes to 10 hours behind schedule, typically 3–6 hours. The time is chosen so both ends of that range are survivable: on time it fires at 4:30/5:30 AM Eastern, and a typical delay puts it mid-morning.
+
+What matters more than the hour is that 09:30 UTC falls on the same Eastern calendar day in both EST and EDT. The date matching in `celebrations-check.js` compares against "today in `America/New_York`", so a cron time that straddles midnight Eastern would make the bot look for the wrong day's events.
+
+### Why the keepalive exists
+
+GitHub disables scheduled workflows after 60 days of repository inactivity. It emails you, but it's easy to miss, and the bot just stops — no failed runs, nothing in the Actions tab, just silence. This repo lost the bot twice that way (17 days in July 2026, 35 days from September to October 2026), and both times it only came back because someone manually re-ran the workflow.
+
+A scheduled workflow can't rescue itself from this, because it gets disabled too. The keepalive works by pushing an empty commit, which counts as repository activity and resets the clock for every workflow including itself. It checks first and only commits once the repo has been quiet for 35 days, so an actively developed repo never accumulates noise commits.
 
 ---
 
@@ -200,6 +194,25 @@ If no celebrations are found, the run still succeeds and logs `🔍 No celebrati
 - Calendar IDs in the map must match `CALENDAR_IDS` exactly.
 - Only needed for first-person event formats (`Happy birthday to you!`, `Your N-year anniversary`).
 
+### The bot stopped entirely
+
+First, check whether it's *failing* or *not running at all* — they look the same in Slack but have nothing else in common.
+
+```bash
+gh run list --limit 30
+```
+
+**Runs are present but red** → a real error. Open the failing run; the summary at the bottom lists every failure with its cause.
+
+**No runs at all for a stretch of days** → the schedule isn't firing. Almost always GitHub's 60-day inactivity auto-disable. Check **Actions → Daily Celebrations Check** for a banner offering to re-enable it, then:
+
+```bash
+gh workflow enable "Daily Celebrations Check"
+gh workflow run "Keepalive"    # resets the clock so it doesn't recur
+```
+
+**Runs are present and green but Slack is quiet** → that should no longer be possible; a green run means every message was accepted by Slack. If it happens anyway, the bot is posting to the wrong place: check `SLACK_CHANNEL`, and remember that manual runs deliberately redirect to `#celebrations-bot-test`.
+
 ---
 
 ## Customization
@@ -251,9 +264,16 @@ Edit the cron in `.github/workflows/celebrations-check.yml`. Some examples:
 
 | Cron | Runs at |
 |---|---|
-| `0 12 * * *` | 12:00 UTC daily (current) |
-| `0 13 * * *` | 1 PM UTC daily (8 AM EST / 9 AM EDT) |
-| `0 12 * * 1-5` | 12:00 UTC weekdays only |
+| `30 9 * * *` | 09:30 UTC daily (current) |
+| `30 11 * * *` | 11:30 UTC daily (6:30 AM EST / 7:30 AM EDT) |
+| `30 9 * * 1-5` | 09:30 UTC weekdays only |
+
+Two constraints worth keeping in mind before you move it:
+
+- **Don't schedule between roughly 00:00 and 05:00 UTC.** That's the previous Eastern calendar day in EST, so the bot would look for the wrong day's events.
+- **Avoid the top of the hour.** GitHub's queues spike there, and this job is already arriving hours late. `:30` is deliberate.
+
+A weekday-only schedule (`1-5`) means any birthday falling on a weekend is missed entirely, since the bot only ever looks at the day it runs.
 
 ---
 
@@ -262,6 +282,7 @@ Edit the cron in `.github/workflows/celebrations-check.yml`. Some examples:
 - Nothing sensitive lives in the repo — all credentials are GitHub Secrets, injected at runtime.
 - The Google API key is restricted to the Calendar API and only ever reads. If it leaks, the blast radius is bounded to reading already-shared calendar events.
 - The Slack bot token can be revoked from the Slack admin panel and re-pasted into GitHub Secrets without any code change.
+- The keepalive workflow pushes with the built-in `GITHUB_TOKEN`, scoped to `contents: write` on this repo only. No extra credential is involved.
 - Rotate both tokens annually as a baseline, and immediately if either is suspected compromised.
 
 ---
@@ -269,32 +290,38 @@ Edit the cron in `.github/workflows/celebrations-check.yml`. Some examples:
 ## Architecture summary
 
 ```
-┌─────────────────┐       cron 0 12 * * *
-│ GitHub Actions  │ ─────────────────────┐
-└─────────────────┘                      │
-                                          ▼
-                              ┌─────────────────────┐
-                              │ celebrations-check  │
-                              │       .js (Node 18) │
-                              └──────────┬──────────┘
-                                         │
-                ┌────────────────────────┼─────────────────────┐
-                ▼                        ▼                     ▼
-       ┌────────────────┐      ┌─────────────────┐    ┌──────────────┐
-       │ Calendar API   │      │ Calendar API    │    │ Calendar API │
-       │ (Gusto cal 1)  │ ...  │ (Gusto cal N)   │    │ (Gusto cal X)│
-       └────────────────┘      └─────────────────┘    └──────────────┘
-                                         │
-                                         ▼
-                              ┌─────────────────────┐
-                              │ filter + parse      │
-                              │ (today in EST only) │
-                              └──────────┬──────────┘
-                                         ▼
-                              ┌─────────────────────┐
-                              │ Slack chat.postMsg  │
-                              │  → #celebrations    │
-                              └─────────────────────┘
+┌─────────────────┐    cron 30 9 * * *
+│ GitHub Actions  │ ─────────────────────┐          ┌──────────────────┐
+└─────────────────┘                      │          │ keepalive.yml    │
+                                         │          │ 1st + 15th       │
+                                         ▼          │ empty commit, so │
+                             ┌─────────────────────┐│ the cron above   │
+                             │ celebrations-check  ││ is never auto-   │
+                             │       .js (Node 18) ││ disabled         │
+                             └──────────┬──────────┘└──────────────────┘
+                                        │
+               ┌────────────────────────┼─────────────────────┐
+               ▼                        ▼                     ▼
+      ┌────────────────┐      ┌─────────────────┐    ┌──────────────┐
+      │ Calendar API   │      │ Calendar API    │    │ Calendar API │
+      │ (Gusto cal 1)  │ ...  │ (Gusto cal N)   │    │ (Gusto cal X)│
+      └────────────────┘      └─────────────────┘    └──────────────┘
+                                        │
+                                        ▼
+                             ┌─────────────────────┐
+                             │ filter + parse      │
+                             │ (today in EST only) │
+                             └──────────┬──────────┘
+                                        ▼
+                             ┌─────────────────────┐
+                             │ Slack chat.postMsg  │
+                             │  → #celebrations    │
+                             └──────────┬──────────┘
+                                        ▼
+                             ┌─────────────────────┐
+                             │ any failures?       │
+                             │  yes → exit 1 (red) │
+                             └─────────────────────┘
 ```
 
 ---

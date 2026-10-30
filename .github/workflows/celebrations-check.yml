@@ -2,10 +2,13 @@ name: Daily Celebrations Check
 
 on:
   schedule:
-    # Run daily at 11:30 UTC - this hits 7:30 AM EST and 6:30 AM EDT
-    # Consistent time that works year-round without double runs
-    - cron: '30 11 * * *'
-  
+    # 09:30 UTC. GitHub's shared runners queue scheduled jobs under load and this
+    # one has been landing 3-6 hours late, so the time is picked to absorb that:
+    # on time it is 4:30/5:30 AM ET, and a typical delay puts it mid-morning.
+    # Either way it stays on the correct Eastern calendar day in both EST and EDT,
+    # which is what the date matching in celebrations-check.js depends on.
+    - cron: '30 9 * * *'
+
   # Allow manual triggering for testing
   workflow_dispatch:
 

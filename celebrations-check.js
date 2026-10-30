@@ -60,9 +60,13 @@ class CelebrationsBot {
         this.calendarIds = process.env.CALENDAR_IDS?.split(',').map(id => id.trim()) || [];
         this.calendarNameMap = this.parseCalendarNameMap();
         this.slackChannel = process.env.SLACK_CHANNEL || '#celebrations-bot-test';
-        
+
+        // Anything pushed here turns the workflow red. A green run must mean
+        // "every message that should have been sent, was sent".
+        this.failures = [];
+
         this.calendar = google.calendar({ version: 'v3', auth: this.calendarApiKey });
-        
+
         console.log(`Initialized bot with ${this.calendarIds.length} calendars`);
         console.log(`Target channel: ${this.slackChannel}`);
     }
@@ -94,19 +98,6 @@ class CelebrationsBot {
         const month = String(estDate.getMonth() + 1).padStart(2, '0');
         const day = String(estDate.getDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
-    }
-
-    getEasternTimezoneOffset() {
-        // Get current timezone offset for Eastern Time
-        const now = new Date();
-        const utc = new Date(now.getTime() + (now.getTimezoneOffset() * 60000));
-        const eastern = new Date(utc.toLocaleString("en-US", {timeZone: "America/New_York"}));
-        const offset = (utc.getTime() - eastern.getTime()) / (1000 * 60 * 60);
-        
-        // Return as string (e.g., "-05:00" or "-04:00")
-        const hours = Math.floor(Math.abs(offset));
-        const sign = offset <= 0 ? '+' : '-';
-        return `${sign}${String(hours).padStart(2, '0')}:00`;
     }
 
     getRandomMessage(messagePool) {
@@ -142,19 +133,13 @@ class CelebrationsBot {
             console.log(`Found ${celebrationEvents.length} celebration events for today`);
             return celebrationEvents;
         } catch (error) {
+            // Keep going so one bad calendar can't silence the others, but make
+            // sure the run still ends red -- a revoked API key used to look
+            // identical to "nobody has a birthday today".
             console.error(`Error fetching events for calendar ${calendarId}:`, error.message);
+            this.failures.push(`calendar ${calendarId}: ${error.message}`);
             return [];
         }
-    }
-
-    getDateOffset(days) {
-        const now = new Date();
-        const estDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
-        estDate.setDate(estDate.getDate() + days);
-        const year = estDate.getFullYear();
-        const month = String(estDate.getMonth() + 1).padStart(2, '0');
-        const day = String(estDate.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
     }
 
     isEventToday(event, todayEST) {
@@ -290,14 +275,16 @@ class CelebrationsBot {
             });
 
             if (response.data.ok) {
-                console.log('✅ Message sent successfully to Slack');
+                console.log(`✅ Message sent successfully to ${this.slackChannel}`);
                 return true;
             } else {
                 console.error('❌ Slack API error:', response.data.error);
+                this.failures.push(`slack ${this.slackChannel}: ${response.data.error}`);
                 return false;
             }
         } catch (error) {
             console.error('❌ Error sending Slack message:', error.message);
+            this.failures.push(`slack ${this.slackChannel}: ${error.message}`);
             return false;
         }
     }
@@ -334,29 +321,37 @@ class CelebrationsBot {
         // Send messages for all celebrations found
         if (celebrations.length === 0) {
             console.log('🔍 No celebrations found for today');
-            return;
-        }
+        } else {
+            console.log(`\n🎉 Found ${celebrations.length} celebration(s) for today!`);
 
-        console.log(`\n🎉 Found ${celebrations.length} celebration(s) for today!`);
-        
-        let successCount = 0;
-        for (const celebration of celebrations) {
-            console.log(`\n📤 Sending ${celebration.type} message for ${celebration.name}...`);
-            console.log(`📝 Message: ${celebration.message}`);
-            
-            const success = await this.sendSlackMessage(celebration.message);
-            if (success) {
-                successCount++;
+            let successCount = 0;
+            for (const celebration of celebrations) {
+                console.log(`\n📤 Sending ${celebration.type} message for ${celebration.name}...`);
+                console.log(`📝 Message: ${celebration.message}`);
+
+                const success = await this.sendSlackMessage(celebration.message);
+                if (success) {
+                    successCount++;
+                }
+
+                // Add a small delay between messages to avoid rate limits
+                if (celebrations.length > 1) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
             }
-            
-            // Add a small delay between messages to avoid rate limits
-            if (celebrations.length > 1) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
+
+            console.log(`📊 Sent ${successCount}/${celebrations.length} celebration message(s) successfully`);
         }
 
         console.log(`\n✨ Celebrations check complete!`);
-        console.log(`📊 Sent ${successCount}/${celebrations.length} messages successfully`);
+
+        if (this.failures.length > 0) {
+            console.error(`\n💥 ${this.failures.length} failure(s) this run:`);
+            for (const failure of this.failures) {
+                console.error(`   - ${failure}`);
+            }
+            process.exitCode = 1;
+        }
     }
 }
 
